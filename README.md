@@ -43,23 +43,6 @@ To migrate from an existing install:
 npx clawbridge-agent setup --migrate
 ```
 
----
-
-## 🏢 Need a Managed Setup?
-
-Don't want to deal with servers, Docker, and configuration? **Clawbridge Agency** handles everything for you — VPS provisioning, full installation, channel setup, custom AI persona, and ongoing support.
-
-| | Self-Host | Managed by Clawbridge Agency |
-|---|---|---|
-| Setup | You do it | We handle everything |
-| Updates | `clawbridge upgrade` | Done for you |
-| Channel config | DIY | Included |
-| Custom persona & memory | DIY | Included |
-| Support | Community / GitHub | Direct email |
-
-🌐 **[clawbridgeagency.com](https://clawbridgeagency.com)** • 📩 **[hello@clawbridgeagency.com](mailto:hello@clawbridgeagency.com)**
-
----
 
 ## Features
 
@@ -226,8 +209,6 @@ Only security fixes, bug fixes, and clear improvements will be accepted to the b
 ## Community
 
 Questions? Ideas? [Join the Discord](https://discord.gg/VDdww8qS42).
-
-Need a managed setup? Visit **[clawbridgeagency.com](https://clawbridgeagency.com)** or email **[hello@clawbridgeagency.com](mailto:hello@clawbridgeagency.com)**
 
 ## Changelog
 
