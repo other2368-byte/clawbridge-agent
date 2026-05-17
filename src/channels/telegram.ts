@@ -24,6 +24,7 @@ import type {
   OutboundMessage,
 } from './adapter.js';
 import { registerChannelAdapter } from './channel-registry.js';
+import { COMMAND_REGISTRY } from '../shared/commands.js';
 import { interceptPairingMessage } from './telegram-pairing.js';
 import { transcribeAudio } from '../transcription.js';
 
@@ -468,6 +469,17 @@ function createAdapter(): ChannelAdapter | null {
         log.warn('Telegram deleteWebhook failed (continuing)', { err: (err as Error).message });
       }
       log.info('Telegram bot online', { username: botUsername, id: me.id });
+      // Register slash commands so Telegram shows autocomplete when user types /
+      try {
+        const cmds = COMMAND_REGISTRY.filter((c) => c.description).map((c) => ({
+          command: c.command.slice(1),
+          description: c.description ?? '',
+        }));
+        await tgPost(token, 'setMyCommands', { commands: cmds });
+        log.info('Telegram commands registered', { count: cmds.length });
+      } catch (err) {
+        log.warn('Telegram setMyCommands failed (non-fatal)', { err: (err as Error).message });
+      }
       running = true;
       pollPromise = pollLoop(config);
     },
