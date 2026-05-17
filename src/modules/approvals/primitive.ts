@@ -201,6 +201,8 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<boo
     action,
     payload: JSON.stringify(payload),
     created_at: new Date().toISOString(),
+    channel_type: target.messagingGroup.channel_type,
+    platform_id: target.messagingGroup.platform_id,
     title,
     options_json: JSON.stringify(normalizedOptions),
   });

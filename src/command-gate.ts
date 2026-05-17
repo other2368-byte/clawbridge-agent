@@ -1,22 +1,23 @@
 /**
- * Host-side command gate. Classifies inbound slash commands and gates
- * them before they reach the container.
+ * Host-side command gate.
  *
- * - Filtered commands: dropped silently (never reach the container)
- * - Admin commands: checked against user_roles; denied senders get a
- *   "Permission denied" response written directly to messages_out
+ * - Filtered: dropped silently (never reach container)
+ * - Host: handled by the host process directly
+ * - Admin: checked against user_roles; denied senders get permission-denied response
  * - Normal messages: pass through unchanged
  */
-import { classifySlashCommand } from './shared/commands.js';
+import { classifySlashCommand, COMMAND_REGISTRY } from './shared/commands.js';
 import { getDb, hasTable } from './db/connection.js';
 
-export type GateResult = { action: 'pass' } | { action: 'filter' } | { action: 'deny'; command: string };
+export type GateResult =
+  | { action: 'pass' }
+  | { action: 'filter' }
+  | { action: 'deny'; command: string }
+  | { action: 'handle'; command: string };
 
 /**
- * Classify a message and decide whether it should reach the container.
- * Returns 'pass' for normal messages and authorized admin commands,
- * 'filter' for silently-dropped commands, 'deny' for unauthorized
- * admin commands.
+ * Classify a message and decide how to route it.
+ * Returns pass, filter, deny, or handle (host-processed).
  */
 export function gateCommand(content: string, userId: string | null, agentGroupId: string): GateResult {
   let text: string;
@@ -30,8 +31,15 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
   const classified = classifySlashCommand(text);
   if (classified.category === 'none' || classified.category === 'passthrough') return { action: 'pass' };
   if (classified.category === 'filtered') return { action: 'filter' };
+  if (classified.category === 'host') {
+    const def = COMMAND_REGISTRY.find((d) => d.command === classified.command);
+    const adminOnly = def?.adminOnly !== false;
+    if (adminOnly && !isAdmin(userId, agentGroupId)) {
+      return { action: 'deny', command: classified.command };
+    }
+    return { action: 'handle', command: classified.command };
+  }
   if (classified.category !== 'admin') return { action: 'pass' };
-
   if (isAdmin(userId, agentGroupId)) {
     return { action: 'pass' };
   }
@@ -40,7 +48,7 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
 
 function isAdmin(userId: string | null, agentGroupId: string): boolean {
   if (!userId) return false;
-  if (!hasTable(getDb(), 'user_roles')) return true; // no permissions module = allow all
+  if (!hasTable(getDb(), 'user_roles')) return true;
   const db = getDb();
   const row = db
     .prepare(
