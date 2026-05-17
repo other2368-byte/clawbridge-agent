@@ -146,3 +146,73 @@ describe('deliverSessionMessages — concurrent invocations', () => {
     expect(callCount).toBe(1);
   });
 });
+
+describe('deliverSessionMessages — self-routing guardrail', () => {
+  function insertOutboundAgent(agentGroupId: string, sessionId: string, msgId: string, targetPlatformId: string): void {
+    const db = new Database(outboundDbPath(agentGroupId, sessionId));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
+       VALUES (?, datetime('now'), 'chat', ?, 'agent', ?)`,
+    ).run(msgId, targetPlatformId, JSON.stringify({ text: 'hello' }));
+    db.close();
+  }
+
+  it('redirects to origin chat when agent self-routes (platform_id === agent_group_id)', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    // Message targets the agent's own group id — the self-routing bug
+    insertOutboundAgent('ag-1', session.id, 'self-route-1', 'ag-1');
+
+    const deliveredTo: { channelType: string; platformId: string }[] = [];
+    setDeliveryAdapter({
+      async deliver(channelType, platformId, _threadId, _kind, _content) {
+        deliveredTo.push({ channelType, platformId });
+        return 'plat-msg-id';
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    // Must have been redirected to the origin chat (telegram:123), not A2A
+    expect(deliveredTo).toHaveLength(1);
+    expect(deliveredTo[0].channelType).toBe('telegram');
+    expect(deliveredTo[0].platformId).toBe('telegram:123');
+  });
+
+  it('does not call channel adapter when agent self-routes with no origin messaging group', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    // Simulate no origin chat by nulling messaging_group_id on the in-memory object
+    (session as unknown as Record<string, unknown>).messaging_group_id = null;
+    insertOutboundAgent('ag-1', session.id, 'self-orphan-1', 'ag-1');
+
+    let adapterCalled = false;
+    setDeliveryAdapter({
+      async deliver() { adapterCalled = true; return 'plat-msg-id'; },
+    });
+
+    // Error is caught by retry logic and message is marked failed — adapter never called
+    await deliverSessionMessages(session);
+    expect(adapterCalled).toBe(false);
+  });
+
+  it('does NOT redirect legitimate A2A messages to a different agent group', async () => {
+    seedAgentAndChannel();
+    // Create a second agent group as the target
+    createAgentGroup({ id: 'ag-2', name: 'Target Agent', folder: 'target-agent', agent_provider: null, created_at: new Date().toISOString() });
+
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    // Message targets a DIFFERENT agent group (ag-2 != ag-1) — guardrail must not trigger.
+    // If it wrongly redirected, the channel adapter would be called. Verify it is not.
+    insertOutboundAgent('ag-1', session.id, 'a2a-legit-1', 'ag-2');
+
+    let adapterCalled = false;
+    setDeliveryAdapter({
+      async deliver() { adapterCalled = true; return 'plat-msg-id'; },
+    });
+
+    // A2A route fails (unauthorized), caught by retry, message marked failed — adapter not called
+    await deliverSessionMessages(session);
+    expect(adapterCalled).toBe(false);
+  });
+});
