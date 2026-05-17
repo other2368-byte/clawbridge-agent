@@ -17,11 +17,11 @@ import path from 'path';
 
 import { readContainerConfig } from '../../container-config.js';
 import { getAgentGroup } from '../../db/agent-groups.js';
-import { getActiveSessions } from '../../db/sessions.js';
+import { getActiveSessions, getPendingApprovalsByAction, deletePendingApproval, getSession } from '../../db/sessions.js';
 import { log } from '../../log.js';
 import { sessionDir } from '../../session-manager.js';
 import type { Session } from '../../types.js';
-import { requestApproval, registerApprovalHandler, registerApprovalRejectionHandler } from '../approvals/index.js';
+import { requestApproval, registerApprovalHandler, registerApprovalRejectionHandler, notifyAgent } from '../approvals/index.js';
 
 const POLL_INTERVAL_MS = 250;
 
@@ -52,7 +52,7 @@ const DANGEROUS_COMMAND_PATTERNS: RegExp[] = [
   /\brm\s+[^\n]*-(?:[^\n]*r[^\n]*f|[^\n]*f[^\n]*r)/i,
   /\b(?:launchctl|systemctl)\b/i,
   /\b(?:kill|pkill|killall)\b/i,
-  /\bdocker\s+(?:stop|rm|rmi|compose\s+down)\b/i,
+  /\bdocker\s+(?:stop|kill|rm|rmi|compose\s+(?:down|stop)|system\s+prune|volume\s+prune|container\s+prune)\b/i,
   /\bgit\s+reset\s+--hard\b/i,
   /\bgit\s+clean\b/i,
   /\b(?:apt|apt-get|brew|npm|pnpm|yarn|pip|pip3)\s+(?:install|remove|uninstall|upgrade|update)\b/i,
@@ -327,10 +327,66 @@ async function loop(): Promise<void> {
   }
 }
 
+
+/**
+ * On host startup, reject any host_exec approvals that were left pending from
+ * a previous run. The container session that requested them no longer exists
+ * (the container restarts alongside the host), so the responsePath-based IPC
+ * is dead. Rejecting them here ensures the agent is notified rather than
+ * hanging indefinitely. If the admin had already tapped Approve before the
+ * host restarted, the pending row was deleted by the response handler before
+ * this runs, so it's a no-op for that row.
+ */
+export async function rejectStaleHostExecApprovals(): Promise<void> {
+  let stale: ReturnType<typeof getPendingApprovalsByAction>;
+  try {
+    stale = getPendingApprovalsByAction('host_exec');
+  } catch {
+    return;
+  }
+  for (const row of stale) {
+    try {
+      let payload: Record<string, unknown>;
+      try {
+        payload = JSON.parse(row.payload) as Record<string, unknown>;
+      } catch {
+        deletePendingApproval(row.approval_id);
+        continue;
+      }
+
+      // Write a denial to responsePath so any still-running container poll
+      // loop (unlikely after restart) gets a clean exit rather than timing out.
+      const responsePath = typeof payload.responsePath === 'string' ? payload.responsePath : null;
+      if (responsePath) {
+        try {
+          fs.mkdirSync(path.dirname(responsePath), { recursive: true });
+          writeAtomic(responsePath, JSON.stringify(deniedResponse('host_exec approval expired: host process restarted.')));
+        } catch {
+          /* best-effort — session dir may not exist */
+        }
+      }
+
+      // Notify the requesting session so the agent learns what happened.
+      if (row.session_id) {
+        const session = getSession(row.session_id);
+        if (session) {
+          notifyAgent(session, 'host_exec approval expired: the host process restarted while awaiting your approval. Please re-run the command.');
+        }
+      }
+
+      deletePendingApproval(row.approval_id);
+      log.info('host_exec: rejected stale approval on startup', { approvalId: row.approval_id });
+    } catch (err) {
+      log.warn('host_exec: failed to reject stale approval', { approvalId: row.approval_id, err: (err as Error).message });
+    }
+  }
+}
+
 export function startHostExecWatcher(): void {
   if (polling) return;
   polling = true;
   void loop();
+  void rejectStaleHostExecApprovals();
   log.info('host_exec watcher started');
 }
 

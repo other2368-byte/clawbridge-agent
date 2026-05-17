@@ -30,6 +30,7 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
   const classified = classifySlashCommand(text);
   if (classified.category === 'none' || classified.category === 'passthrough') return { action: 'pass' };
   if (classified.category === 'filtered') return { action: 'filter' };
+  if (classified.category !== 'admin') return { action: 'pass' };
 
   if (isAdmin(userId, agentGroupId)) {
     return { action: 'pass' };
